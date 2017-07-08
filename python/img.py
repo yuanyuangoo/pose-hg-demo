@@ -1,234 +1,269 @@
-import numpy as np
-import scipy.misc
-import scipy.signal
 import math
+import cv2 as cv
+import np as np
+# Coordinate transformation
 
-import draw
-import ref
-
-# =============================================================================
-# General image processing functions
-# =============================================================================
-
-def get_transform(center, scale, res, rot=0):
-    # Generate transformation matrix
+def getTransform(center, scale, rot, res):
     h = 200 * scale
-    t = np.zeros((3, 3))
-    t[0, 0] = float(res[1]) / h
-    t[1, 1] = float(res[0]) / h
-    t[0, 2] = res[1] * (-float(center[0]) / h + .5)
-    t[1, 2] = res[0] * (-float(center[1]) / h + .5)
-    t[2, 2] = 1
-    if not rot == 0:
-        rot = -rot # To match direction of rotation from cropping
-        rot_mat = np.zeros((3,3))
-        rot_rad = rot * np.pi / 180
-        sn,cs = np.sin(rot_rad), np.cos(rot_rad)
-        rot_mat[0,:2] = [cs, -sn]
-        rot_mat[1,:2] = [sn, cs]
-        rot_mat[2,2] = 1
-        # Need to rotate around center
-        t_mat = np.eye(3)
-        t_mat[0,2] = -res[1]/2
-        t_mat[1,2] = -res[0]/2
-        t_inv = t_mat.copy()
-        t_inv[:2,2] *= -1
-        t = np.dot(t_inv,np.dot(rot_mat,np.dot(t_mat,t)))
+    t = np.eye(3)
+
+    # Scaling
+    t[1][1] = res / h
+    t[2][2] = res / h
+
+    # Translation
+    t[1][3] = res * (-center[1] / h + .5)
+    t[2][3] = res * (-center[2] / h + .5)
+
+    # Rotation
+    if rot != 0:
+        rot = -rot
+        r = np.eye(3)
+        ang = rot * math.pi / 180
+        s = math.sin(ang)
+        c = math.cos(ang)
+        r[1][1] = c
+        r[1][2] = -s
+        r[2][1] = s
+        r[2][2] = c
+        # Need to make sure rotation is around center
+        t_ = np.eye(3)
+        t_[1][3] = -res/2
+        t_[2][3] = -res/2
+        t_inv = np.eye(3)
+        t_inv[1][3] = res/2
+        t_inv[2][3] = res/2
+        t = t_inv * r * t_ * t
+    
+
     return t
 
-def transform(pt, center, scale, res, invert=0, rot=0):
-    # Transform pixel location to different reference
-    t = get_transform(center, scale, res, rot=rot)
+
+def transform(pt, center, scale, rot, res, invert):
+    # For managing coordinate transformations between the original image space
+    # and the heatmap
+
+    pt_ = np.ones(3)
+    pt_[1] = pt[1]
+    pt_[2] = pt[2]
+    t = getTransform(center, scale, rot, res)
     if invert:
-        t = np.linalg.inv(t)
-    new_pt = np.array([pt[0], pt[1], 1.]).T
-    new_pt = np.dot(t, new_pt)
-    return new_pt[:2].astype(int)
+        t = np.inverse(t)
+    
+    new_point = (t*pt_)[0:2].astype(int)
+    return new_point
 
-def crop(img, center, scale, res, rot=0):
-    # Upper left point
-    ul = np.array(transform([0, 0], center, scale, res, invert=1))
-    # Bottom right point
-    br = np.array(transform(res, center, scale, res, invert=1))
 
-    # Padding so that when rotated proper amount of context is included
-    pad = int(np.linalg.norm(br - ul) / 2 - float(br[1] - ul[1]) / 2)
-    if not rot == 0:
-        ul -= pad
-        br += pad
+#######################################-
+# Cropping
+#######################################-
 
-    new_shape = [br[1] - ul[1], br[0] - ul[0]]
-    if len(img.shape) > 2:
-        new_shape += [img.shape[2]]
-    new_img = np.zeros(new_shape)
+def crop(img, center, scale, rot, res):
+    # Crop def tailored to the needs of our system. Provide a center
+    # and scale value and the image will be cropped and resized to the output
+    # resolution determined by res. 'rot' will also rotate the image as needed.
 
-    # Range to fill new array
-    new_x = max(0, -ul[0]), min(br[0], len(img[0])) - ul[0]
-    new_y = max(0, -ul[1]), min(br[1], len(img)) - ul[1]
-    # Range to sample from original image
-    old_x = max(0, ul[0]), min(len(img[0]), br[0])
-    old_y = max(0, ul[1]), min(len(img), br[1])
-    new_img[new_y[0]:new_y[1], new_x[0]:new_x[1]] = img[old_y[0]:old_y[1], old_x[0]:old_x[1]]
+    ul = transform((1,1), center, scale, 0, res, true)
+    br = transform((res,res), center, scale, 0, res, true)
 
-    if not rot == 0:
-        # Remove padding
-        new_img = scipy.misc.imrotate(new_img, rot)
-        new_img = new_img[pad:-pad, pad:-pad]
+    pad = math.floor(np.linalg.norm((ul - br).astype(float))/2 - (br[1]-ul[1])/2)
+    if rot != 0:
+        ul = ul - pad
+        br = br + pad
+    
+    ht, wd, channels = img.shape
 
-    return scipy.misc.imresize(new_img, res)
+    newDim = (channels, br[1] - ul[1], br[0] - ul[0])
+    newImg = np.zeros(newDim[2],newDim[1],newDim[0])
 
-def two_pt_crop(img, scale, pt1, pt2, pad, res, chg=None):
-    center = (pt1+pt2) / 2
-    scale = max(20*scale, np.linalg.norm(pt1-pt2)) * .007
-    scale *= pad
-    angle = math.atan2(pt2[1]-pt1[1],pt2[0]-pt1[0]) * 180 / math.pi - 90
-    flip = False
+    newX = (max(1, -ul[1]+1), min(br[1], wd) - ul[1])
+    newY = (max(1, -ul[2]+1), min(br[2], ht) - ul[2])
+    oldX = (max(1, ul[1]+1), min(br[1], wd))
+    oldY = (max(1, ul[2]+1), min(br[2], ht))
 
-    # Handle data augmentation
-    if chg is not None:
-        # Flipping
-        if 'flip' in chg:
-            if np.random.rand() < .5:
-                flip = True
-        # Scaling
-        if 'scale' in chg:
-            scale *= min(1+chg['scale'], max(1-chg['scale'], (np.random.randn() * chg['scale']) + 1))
-        # Rotation
-        if 'rotate' in chg:
-            angle += np.random.randint(-chg['rotate'], chg['rotate'] + 1)
-        # Translation
-        if 'translate' in chg:
-            for i in xrange(2):
-                offset = np.random.randint(-chg['translate'], chg['translate'] + 1) * scale
-                center[i] += offset
+    if newDim:size()[1] > 2:
+        newImg:sub(1,newDim[1],newY[1],newY[2],newX[1],newX[2]):copy(img:sub(1,newDim[1],oldY[1],oldY[2],oldX[1],oldX[2]))
+    else
+        newImg:sub(newY[1],newY[2],newX[1],newX[2]):copy(img:sub(oldY[1],oldY[2],oldX[1],oldX[2]))
+    newImg=cv.resize(newX,newY)
 
-    # Create input image
-    cropped = crop(img, center, scale, res, rot=angle)
-    inp = np.zeros((3, res[0], res[1]))
-    for i in xrange(3):
-        inp[i, :, :] = cropped[:, :, i]
+    if rot != 0:
+        newImg = image.rotate(newImg, rot * .pi / 180, 'bilinear')
+        if newDim:size()[1] > 2:
+            newImg = newImg:sub(1,newDim[1],pad,newDim[2]-pad,pad,newDim[3]-pad)
+        else
+            newImg = newImg:sub(pad,newDim[1]-pad,pad,newDim[2]-pad)
+        
+    
 
-    # Create heatmap
-    hm = np.zeros((2,res[0],res[1]))
-    draw.gaussian(hm[0],transform(pt1, center, scale, res, rot=angle), 2)
-    draw.gaussian(hm[1],transform(pt2, center, scale, res, rot=angle), 2)
+    newImg = image.scale(newImg,res,res)
+    return newImg
 
-    if flip:
-        inp = np.array([np.fliplr(inp[i]) for i in xrange(len(inp))])
-        hm = np.array([np.fliplr(hm[i]) for i in xrange(len(hm))])
 
-    return inp, hm
+def twoPointCrop(img, s, pt1, pt2, pad, res)
+    center = (pt1 + pt2) / 2
+    scale = max(20*s,np.linalg.norm(pt1 - pt2)) * .007
+    scale = scale * pad
+    angle = .atan2(pt2[2]-pt1[2],pt2[1]-pt1[1]) * 180 / .pi - 90
+    return crop(img, center, scale, angle, res)
 
-def nms(img):
-    # Do non-maximum suppression on a 2D array
-    win_size = 3
-    domain = np.ones((win_size, win_size))
-    maxes = scipy.signal.order_filter(img, domain, win_size ** 2 - 1)
-    diff = maxes - img
-    result = img.copy()
-    result[diff > 0] = 0
-    return result
 
-# =============================================================================
-# Helpful display functions
-# =============================================================================
+def compileImages(imgs, nrows, ncols, res)
+    # Assumes the input images are all square/the same resolution
+    totalImg = np.zeros(3,nrows*res,ncols*res)
+    for i = 1,#imgs do
+        r = np.floor((i-1)/ncols) + 1
+        c = ((i - 1) % ncols) + 1
+        totalImg:sub(1,3,(r-1)*res+1,r*res,(c-1)*res+1,c*res):copy(imgs[i])
+    
+    return totalImg
 
-def gauss(x, a, b, c, d=0):
-    return a * np.exp(-(x - b)**2 / (2 * c**2)) + d
 
-def color_heatmap(x):
-    color = np.zeros((x.shape[0],x.shape[1],3))
-    color[:,:,0] = gauss(x, .5, .6, .2) + gauss(x, 1, .8, .3)
-    color[:,:,1] = gauss(x, 1, .5, .3)
-    color[:,:,2] = gauss(x, 1, .2, .3)
-    color[color > 1] = 1
-    color = (color * 255).astype(np.uint8)
-    return color
+#######################################-
+# Non-maximum Suppression
+#######################################-
 
-def sample_with_heatmap(dataset, inp, out, num_rows=2, parts_to_show=None):
-    img = np.zeros((inp.shape[1], inp.shape[2], inp.shape[0]))
-    for i in xrange(3):
-        img[:, :, i] = inp[i, :, :]
+# Set up max network for NMS
+nms_window_size = 3
+nms_pad = (nms_window_size - 1)/2
+maxlayer = nn.Sequential()
+if cudnn:
+    maxlayer:add(cudnn.SpatialMaxPooling(nms_window_size, nms_window_size,1,1, nms_pad, nms_pad))
+    maxlayer:cuda()
+else
+    maxlayer:add(nn.SpatialMaxPooling(nms_window_size, nms_window_size,1,1, nms_pad,nms_pad))
 
-    if parts_to_show is None:
-        parts_to_show = np.arange(out.shape[0])
+maxlayer:evaluate()
 
-    # Generate a single image to display input/output pair
-    num_cols = np.ceil(float(len(parts_to_show)) / num_rows)
-    size = img.shape[0] / num_rows
+def local_maxes(hm, n, c, s, hm_idx)
+    hm = np.Tensor(1,16,64,64):copy(hm):float()
+    if hm_idx: hm = hm:sub(1,-1,hm_idx,hm_idx) 
+    hm_dim = hm:size()
+    max_out
+    # First do nms
+    if cudnn:
+        hmCuda = np.CudaTensor(1, hm_dim[2], hm_dim[3], hm_dim[4])
+        hmCuda:copy(hm)
+        max_out = maxlayer:forward(hmCuda)
+        cunp.synchronize()
+    else
+        max_out = maxlayer:forward(hm)
+    
 
-    full_img = np.zeros((img.shape[0], size * (num_cols + num_rows), 3), np.uint8)
-    full_img[:img.shape[0], :img.shape[1]] = img
+    nms = np.cmul(hm, np.eq(hm, max_out:float()):float())[1]
+    # Loop through each heatmap retrieving top n locations, and their scores
+    pred_coords = np.Tensor(hm_dim[2], n, 2)
+    pred_scores = np.Tensor(hm_dim[2], n)
+    for i = 1, hm_dim[2] do
+        nms_flat = nms[i]:view(nms[i]:nElement())
+        vals,idxs = np.sort(nms_flat,1,true)
+        for j = 1,n do
+            pt = {idxs[j] % 64, np.ceil(idxs[j] / 64) }
+            pred_coords[i][j] = transform(pt, c, s, 0, 64, true)
+            pred_scores[i][j] = vals[j]
+        
+    
+    return pred_coords, pred_scores
 
-    inp_small = scipy.misc.imresize(img, [size, size])
 
-    # Set up heatmap display for each part
-    for i, part in enumerate(parts_to_show):
-        if type(part) is str:
-            part_idx = ref.parts[dataset].index(part)
-        else:
-            part_idx = part
-        out_resized = scipy.misc.imresize(out[part_idx], [size, size])
-        out_resized = out_resized.astype(float)/255
-        out_img = inp_small.copy() * .3
-        color_hm = color_heatmap(out_resized)
-        out_img += color_hm * .7
+#######################################-
+# Drawing functions
+#######################################-
 
-        col_offset = (i % num_cols + num_rows) * size
-        row_offset = (i // num_cols) * size
-        full_img[row_offset:row_offset + size, col_offset:col_offset + size] = out_img
+def drawGaussian(img, pt, sigma)
+    # Draw a 2D gaussian
+    # Check that any part of the gaussian is in-bounds
+    ul = {.floor(pt[1] - 3 * sigma), .floor(pt[2] - 3 * sigma)}
+    br = {.floor(pt[1] + 3 * sigma), .floor(pt[2] + 3 * sigma)}
+    # If not, return the image as is
+    if (ul[1] > img:size(2) or ul[2] > img:size(1) or br[1] < 1 or br[2] < 1): return img 
+    # Generate gaussian
+    size = 6 * sigma + 1
+    g = image.gaussian(size) # , 1 / size, 1)
+    # Usable gaussian range
+    g_x = {max(1, -ul[1]), min(br[1], img:size(2)) - max(1, ul[1]) + max(1, -ul[1])}
+    g_y = {max(1, -ul[2]), min(br[2], img:size(1)) - max(1, ul[2]) + max(1, -ul[2])}
+    # Image range
+    img_x = {max(1, ul[1]), min(br[1], img:size(2))}
+    img_y = {max(1, ul[2]), min(br[2], img:size(1))}
+    assert(g_x[1] > 0 and g_y[1] > 0)
+    img:sub(img_y[1], img_y[2], img_x[1], img_x[2]):add(g:sub(g_y[1], g_y[2], g_x[1], g_x[2]))
+    img[img:gt(1)] = 1
+    return img
 
-    return full_img
 
-def sample_with_skeleton(annot, idx, preds, res=None):
+def drawLine(img,pt1,pt2,width,color)
+    # I'm sure there's a line drawing def somewhere in np,
+    # but since I couldn't find it here's my basic implementation
+    color = color or {1,1,1}
+    m = np.dist(pt1,pt2)
+    dy = (pt2[2] - pt1[2])/m
+    dx = (pt2[1] - pt1[1])/m
+    for j = 1,width do
+        start_pt1 = np.Tensor({pt1[1] + (-width/2 + j-1)*dy, pt1[2] - (-width/2 + j-1)*dx})
+        start_pt1:ceil()
+        for i = 1,np.ceil(m) do
+            y_idx = np.ceil(start_pt1[2]+dy*i)
+            x_idx = np.ceil(start_pt1[1]+dx*i)
+            if y_idx - 1 > 0 and x_idx -1 > 0 and y_idx < img:size(2) and x_idx < img:size(3):
+                img:sub(1,1,y_idx-1,y_idx,x_idx-1,x_idx):fill(color[1])
+                img:sub(2,2,y_idx-1,y_idx,x_idx-1,x_idx):fill(color[2])
+                img:sub(3,3,y_idx-1,y_idx,x_idx-1,x_idx):fill(color[3])
+            
+         
+    
+    img[img:gt(1)] = 1
 
-    # Load image and basic info
-    ds = annot.attrs['name']
-    img = ref.loadimg(annot, idx)
-    c = annot['center'][idx]
-    s = annot['scale'][idx]
-    if res is None:
-        res = [256, 256]
+    return img
 
-    # Skeleton colors
-    colors = [(255, 0, 0),          # Upper arm (left)
-              (255, 100, 100),      # Lower arm (left)
-              (0, 0, 255),          # Upper arm (right)
-              (100, 100, 255),      # Lower arm (right)
-              (100, 255, 100),      # Head/neck/face
-              (255, 75, 0),        # Upper leg (left)
-              (255, 175, 100),      # Lower leg (left)
-              (0, 75, 255),        # Upper leg (right)
-              (100, 175, 255)       # Lower leg (right)
-              ]
 
-    # Draw arms
-    draw.limb(img, preds[ref.parts[ds].index('lsho')], preds[ref.parts[ds].index('lelb')], colors[0], 5 * s)
-    draw.limb(img, preds[ref.parts[ds].index('lwri')], preds[ref.parts[ds].index('lelb')], colors[1], 5 * s)
-    draw.limb(img, preds[ref.parts[ds].index('rsho')], preds[ref.parts[ds].index('relb')], colors[2], 5 * s)
-    draw.limb(img, preds[ref.parts[ds].index('rwri')], preds[ref.parts[ds].index('relb')], colors[3], 5 * s)
+def colorHM(x)
+    # Converts a one-channel grayscale image to a color heatmap image
+    def gauss(x,a,b,c)
+        return np.exp(-np.pow(np.add(x,-b),2):div(2*c*c)):mul(a)
+    
+    cl = np.zeros(3,x:size(1),x:size(2))
+    cl[1] = gauss(x,.5,.6,.2) + gauss(x,1,.8,.3)
+    cl[2] = gauss(x,1,.5,.3)
+    cl[3] = gauss(x,1,.2,.3)
+    cl[cl:gt(1)] = 1
+    return cl
 
-    if ds == 'mpii':
-        # MPII
-        # Draw head
-        draw.circle(img, preds[ref.parts[ds].index('head')], colors[4], 5 * s)
-        draw.circle(img, preds[ref.parts[ds].index('neck')], colors[4], 5 * s)
 
-        # Draw legs
-        draw.limb(img, preds[ref.parts[ds].index('lhip')], preds[ref.parts[ds].index('lkne')], colors[5], 5 * s)
-        draw.limb(img, preds[ref.parts[ds].index('lank')], preds[ref.parts[ds].index('lkne')], colors[6], 5 * s)
-        draw.limb(img, preds[ref.parts[ds].index('rhip')], preds[ref.parts[ds].index('rkne')], colors[7], 5 * s)
-        draw.limb(img, preds[ref.parts[ds].index('rank')], preds[ref.parts[ds].index('rkne')], colors[8], 5 * s)
 
-    elif ds == 'flic':
-        # FLIC
-        # Draw face
-        draw.circle(img, preds[ref.parts[ds].index('leye')], colors[4], 3 * s)
-        draw.circle(img, preds[ref.parts[ds].index('reye')], colors[4], 3 * s)
-        draw.circle(img, preds[ref.parts[ds].index('nose')], colors[4], 3 * s)
+#######################################-
+# Flipping functions
+#######################################-
 
-        # Draw hips
-        draw.circle(img, preds[ref.parts[ds].index('lhip')], colors[5], 5 * s)
-        draw.circle(img, preds[ref.parts[ds].index('rhip')], colors[7], 5 * s)
+def shuffleLR(x)
+    dim
+    if x:nDimension() == 4:
+        dim = 2
+    else
+        assert(x:nDimension() == 3)
+        dim = 1
+    
 
-    return crop(img, c, s, res)
+    matched_parts = {
+        {1,6},   {2,5},   {3,4},
+        {11,16}, {12,15}, {13,14}
+    }
+
+    for i = 1,#matched_parts do
+        idx1, idx2 = unpack(matched_parts[i])
+        tmp = x:narrow(dim, idx1, 1):clone()
+        x:narrow(dim, idx1, 1):copy(x:narrow(dim, idx2, 1))
+        x:narrow(dim, idx2, 1):copy(tmp)
+    
+
+    return x
+
+
+def flip(x)
+    require 'image'
+    y = np.FloatTensor(x:size())
+    for i = 1, x:size(1) do
+        image.hflip(y[i], x[i]:float())
+    
+    return y:typeAs(x)
+
