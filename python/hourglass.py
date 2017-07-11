@@ -1,6 +1,5 @@
 import PyTorch
 import PyTorchHelpers
-import numpy
 def run(im_names,box):
     TorchModel = PyTorchHelpers.load_lua_class('pose-hg-demo/python/TorchModel.lua', 'TorchModel')
     TorchModel=TorchModel()
