@@ -81,40 +81,44 @@ def crop(img, center, scale, rot, res):
     oldX = (max(1, ul[1]+1), min(br[1], wd))
     oldY = (max(1, ul[2]+1), min(br[2], ht))
 
-    if newDim:size()[1] > 2:
-        newImg:sub(1,newDim[1],newY[1],newY[2],newX[1],newX[2]):copy(img:sub(1,newDim[1],oldY[1],oldY[2],oldX[1],oldX[2]))
-    else
-        newImg:sub(newY[1],newY[2],newX[1],newX[2]):copy(img:sub(oldY[1],oldY[2],oldX[1],oldX[2]))
-    newImg=cv.resize(newX,newY)
+    #if newDim[1] > 2:
+    #    newImg:sub(1,newDim[1],newY[1],newY[2],newX[1],newX[2]):copy(img:sub(1,newDim[1],oldY[1],oldY[2],oldX[1],oldX[2]))
+    newImg=np.resize(img,newDim)
+    #else
+    #    newImg:sub(newY[1],newY[2],newX[1],newX[2]):copy(img:sub(oldY[1],oldY[2],oldX[1],oldX[2]))
 
-    if rot != 0:
-        newImg = image.rotate(newImg, rot * .pi / 180, 'bilinear')
-        if newDim:size()[1] > 2:
-            newImg = newImg:sub(1,newDim[1],pad,newDim[2]-pad,pad,newDim[3]-pad)
-        else
-            newImg = newImg:sub(pad,newDim[1]-pad,pad,newDim[2]-pad)
+    #if rot != 0:
+    #    newImg = image.rotate(newImg, rot * math.pi / 180, 'bilinear')
+    #    newImg = 
+    #    if newDim[0] > 2:
+    #        newImg = newImg:sub(1,newDim[1],pad,newDim[2]-pad,pad,newDim[3]-pad)
+    #    else
+    #        newImg = newImg:sub(pad,newDim[1]-pad,pad,newDim[2]-pad)
         
-    
+    newImg=cv.scale(newImg,res,res)
 
-    newImg = image.scale(newImg,res,res)
+    #newImg = image.scale(newImg,res,res)
     return newImg
 
 
-def twoPointCrop(img, s, pt1, pt2, pad, res)
+def twoPointCrop(img, s, pt1, pt2, pad, res):
     center = (pt1 + pt2) / 2
     scale = max(20*s,np.linalg.norm(pt1 - pt2)) * .007
     scale = scale * pad
-    angle = .atan2(pt2[2]-pt1[2],pt2[1]-pt1[1]) * 180 / .pi - 90
+    angle = math.atan2(pt2[2]-pt1[2],pt2[1]-pt1[1]) * 180 / math.pi - 90
     return crop(img, center, scale, angle, res)
 
 
-def compileImages(imgs, nrows, ncols, res)
+def compileImages(imgs, nrows, ncols, res):
     # Assumes the input images are all square/the same resolution
     totalImg = np.zeros(3,nrows*res,ncols*res)
-    for i = 1,#imgs do
+    i=0
+    for img in imgs:
         r = np.floor((i-1)/ncols) + 1
         c = ((i - 1) % ncols) + 1
-        totalImg:sub(1,3,(r-1)*res+1,r*res,(c-1)*res+1,c*res):copy(imgs[i])
+     #   totalImg:sub(1,3,(r-1)*res+1,r*res,(c-1)*res+1,c*res):copy(imgs[i])
+        totalImg[0:3,((r-1)*res+1):(r*res),((c-1)*res+1):(c*res)]=img
+        i+=1
     
     return totalImg
 
