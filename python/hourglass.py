@@ -1,9 +1,8 @@
 import PyTorch
 import PyTorchHelpers
-def run(im_names,box):
+def run(im,box):
     TorchModel = PyTorchHelpers.load_lua_class('pose-hg-demo/python/TorchModel.lua', 'TorchModel')
     TorchModel=TorchModel()
-    result = PyTorch.DoubleTensor(2,16,2)
-#    disp=PyTorch.DoubleTensor(2,3,378,756)
-    result = TorchModel.predict(im_names,box)
+    result = PyTorch.DoubleTensor(len(box),16,2)
+    result = TorchModel.predict(im,box)
     return result.asNumpyTensor()

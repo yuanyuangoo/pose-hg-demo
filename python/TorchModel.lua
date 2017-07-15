@@ -2,9 +2,7 @@ require 'paths'
 require 'torch'
 paths.dofile('util.lua')
 paths.dofile('../img.lua')
-local cv = require 'cv'
-require 'cv.imgcodecs'
-require 'cv.highgui'
+
 local TorchModel = torch.class('TorchModel')
 
 function TorchModel:__init()
@@ -23,16 +21,13 @@ end
 
 function TorchModel:predict(input,box)
     print('input box')
-    print(box)
-
-
 
     nsamples = box:size()[1]
     xlua.progress(0,nsamples)
     preds = torch.Tensor(nsamples,16,2)
     for i = 1,nsamples do
       -- Set up input image
-      local im = image.load(input)
+      local im = input:transpose(3,1):transpose(2,3)
 
       local center = torch.Tensor(2)
       center[1]=box[i][1]+box[i][3]
