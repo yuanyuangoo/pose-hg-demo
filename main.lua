@@ -48,11 +48,15 @@ end
 -- Main loop
 --------------------------------------------------------------------------------
 
-for i = 1,nsamples do
+for i = 1,nsamples do   
+    i=6
     -- Set up input image
     local im = image.load('images/' .. a['images'][idxs[i]])
     local center = a['center'][idxs[i]]
     local scale = a['scale'][idxs[i]]
+    print(im[2][50][56])
+    
+
     local inp = crop(im, center, scale, 0, 256)
 
     -- Get network output
@@ -64,6 +68,7 @@ for i = 1,nsamples do
     -- Get predictions (hm and img refer to the coordinate space)
     local preds_hm, preds_img = getPreds(hm, center, scale)
     preds[i]:copy(preds_img)
+    print(preds_img)
 
     xlua.progress(i,nsamples)
 
